@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Junk Gulper — Prototype v3.5</title>
+<title>Junk Gulper — Prototype v3.6</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&display=swap" rel="stylesheet">
@@ -680,8 +680,8 @@ function timeout(){
   R.proj = []; resetCycle(); R.mode = 'fail'; R.modeT = 0; SFX.fail();
   let sub = `${left.length} targets left`;
   if (left.length === 1 && left[0].group === R.groups.length-1) sub += ` (${Math.ceil(left[0].hp/left[0].maxHp*100)}% HP)`;
-  UI.banner("TIME'S UP!", sub, S.highest>=1 ? 'Farming to power up' : 'Retrying stage 1', true, D.fail_delay+0.3);
-  if (!S.ftue.fail){ S.ftue.fail = 1; setTimeout(()=>UI.toast('Upgrade Power / Speed, then tap “Retry stage” to push on'), 1600); }
+  UI.banner("TIME'S UP!", sub, `Trying stage ${F.label(R.stage)} again`, true, D.fail_delay+0.3);
+  if (!S.ftue.fail){ S.ftue.fail = 1; setTimeout(()=>UI.toast('Spend your Scrap on Power / Speed to clear it faster'), 1600); }
   persist();
 }
 
@@ -883,8 +883,8 @@ function simStep(dt){
     }
     case 'farm': R.t += dt; bossStep(); projStep(); chainStep(); ghostStep(dt); if (R.mode!=='farm') break; manualStep(dt); squadStep(dt); break;
     case 'farmRestart': if (R.modeT >= D.restart_delay) startFarm(R.stage); break;
-    case 'clear': if (R.modeT >= D.clear_delay + (R.stage>=D.max_stage?1.6:0)){ if (R.stage < D.max_stage) startChallenge(R.stage+1); else startFarm(R.stage); } break;
-    case 'fail': if (R.modeT >= D.fail_delay){ if (S.highest >= 1) startFarm(S.farmStage || S.highest); else startChallenge(1); } break;
+    case 'clear': if (R.modeT >= D.clear_delay + (R.stage>=D.max_stage?1.6:0)){ startChallenge(Math.min(D.max_stage, R.stage+1)); } break;
+    case 'fail': if (R.modeT >= D.fail_delay) startChallenge(R.stage); break;   // Idle Cat Gunner style: just play the same stage again
   }
 }
 function buy(stat, opts={}){
@@ -1993,12 +1993,12 @@ const UI = {
       n.style.backgroundImage = s===R.stage && IMG.hero_head ? `url(${IMG.hero_head.src})` : ''; });
     const tw = $('track').clientWidth - 28; $('track').querySelector('.lf').style.width = Math.max(0, tw*(sub-1)/(D.stages_per_chapter-1)) + 'px';
     const farming = R.mode==='farm'||R.mode==='farmRestart';
-    $('stageTitle').textContent = `${farming?'Farm ':'Stage '}${F.label(R.stage)}`;
+    $('stageTitle').textContent = `Stage ${F.label(R.stage)}`;
     // mode pill: timer in Challenge, Farm + measured rate otherwise (UI-10: no countdown in farm)
     const m = $('mode');
     if (farming){
       const a = S.rates[R.stage];
-      m.className = 'o farm'; m.innerHTML = `Farm <small>${a&&a.length ? '≈ '+fmt(farmRate(R.stage))+'/s' : 'measuring…'}</small>`;
+      m.className = 'o run'; m.innerHTML = 'Challenge';
     } else {
       const lft = (R.mode==='challenge'||R.mode==='clear') ? Math.max(0, R.deadline - R.t) : R.mode==='fail' ? 0 : D.challenge_seconds;
       const warn = R.mode==='challenge' && lft <= 5;
@@ -2007,8 +2007,7 @@ const UI = {
     }
     // countdown bar under the stage progress bar (ref: Idle Cat Gunner)
     { const tb = $('tbar'), tf = $('tfill'), tt = $('ttxt');
-      if (farming){ tb.className = 'farm'; tf.style.width = '100%'; tt.textContent = 'Farm · no time limit'; }
-      else {
+      {
         const lft = (R.mode==='challenge'||R.mode==='clear') ? Math.max(0, R.deadline - R.t) : R.mode==='fail' ? 0 : D.challenge_seconds;
         const warn = R.mode==='challenge' && lft <= 5;
         tb.className = warn ? 'warn' : ''; tf.style.width = (lft/D.challenge_seconds*100) + '%';
@@ -2030,7 +2029,7 @@ const UI = {
       $('wpnBtn').classList.toggle('new', !!S.weapons.newGun); }
     // side buttons
     const canTry = farming && S.highest < D.max_stage;
-    $('retry').classList.toggle('show', canTry);
+    $('retry').classList.remove('show');
     if (canTry) $('retryTxt').textContent = `Retry stage ${F.label(S.highest+1)}`;
     $('play').classList.toggle('dim', !canTry);
     $('playTxt').textContent = canTry ? `Try ${F.label(S.highest+1)}` : S.highest >= D.max_stage ? 'Done' : 'Running';
@@ -2256,7 +2255,7 @@ $('modal').addEventListener('click', e => {
   if (e.target === $('modal')) { UI.close(); return; }
   const el = e.target.closest('[data-act],[data-set],[data-farm]'); if (!el) return;
   if (el.dataset.set){ S.settings[el.dataset.set] = el.checked; persist(); return; }
-  if (el.dataset.farm){ const s = +el.dataset.farm; if (!S.cleared[s]) return; S.farmStage = s; persist(); UI.close(); startFarm(s); return; }
+  if (el.dataset.farm){ const s = +el.dataset.farm; if (!S.cleared[s]) return; UI.close(); startChallenge(s); return; }
   const a = el.dataset.act;
   if (a==='close') UI.close();
   if (a==='cheat'){ S.wallet += F.gold(Math.max(1,R.stage))*10; persist(); UI.settings(); }
@@ -2473,7 +2472,7 @@ document.addEventListener('visibilitychange', () => {
   else {
     SFX.resume(); last = performance.now(); const since = hiddenAt || S.lastTs; hiddenAt = 0;
     claimOffline(since);
-    if (R.aborted){ R.aborted = false; if (S.highest >= 1) startFarm(S.farmStage || S.highest); else startChallenge(1); }
+    if (R.aborted){ R.aborted = false; startChallenge(Math.min(D.max_stage, S.highest + 1)); }
   }
 });
 window.addEventListener('pagehide', persist);
@@ -2486,7 +2485,7 @@ if (window.ResizeObserver){ new ResizeObserver(()=>resize()).observe(document.ge
   await Promise.all([loadAssets(), fontReady]);
   resize(); UI.buildTrack(); applyLoadout();
   const since = S.lastTs; shownWallet = S.wallet;
-  if (S.highest >= 1) startFarm(S.farmStage || S.highest); else startChallenge(1);
+  startChallenge(Math.min(D.max_stage, S.highest + 1));   // always resume on the next uncleared stage
   UI.frame(); resize();
   claimOffline(since); persist();
   $('loading').remove();
