@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Junk Gulper — Prototype v3.4</title>
+<title>Junk Gulper — Prototype v3.5</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&display=swap" rel="stylesheet">
@@ -336,7 +336,9 @@ const D = {
   cam_lead:1.1, cam_anchor_y:.56,   // camera: units of look-ahead along the road; robot sits at 56% screen height
   shake_scale:1,                // global screen-shake multiplier (0 = off); v1.4 values are already ~60% softer
   // v2.7 "chill & boom": the ball explodes on contact (no roll); every wreck pops and can chain into its neighbours
-  blast_radius:2.6, blast_ratio:0.6, chain_radius:1.4, chain_ratio:0.28, chain_delay:0.09,
+  // v3.5 balance pass: no runaway chain reactions
+  vac_side_max:2, vac_side_radius:1.0, vac_side_ratio:0.6,   // vacuum beam width: up to 2 neighbours take 60% per tick
+  blast_radius:1.7, blast_ratio:0.6, blast_falloff:0.55, blast_max:8, chain_radius:1.15, chain_ratio:0.3, chain_max:2, chain_delay:0.09,
   flora_per_wreck:[[2,1],[3,2],[12,7],[30,14]], flora_cap:1600, bloom_count:70,   // [flowers, grass tufts] for light / heavy / final / boss
   roll_speed:4.2, roll_length:4.6, roll_radius:0.75, roll_ratio:0.5, roll_max:6, burst_radius:1.6, burst_ratio:0.3,
   restart_delay:0.5, clear_delay:3.3, fail_delay:1.2, challenge_seconds:75, stages_per_chapter:5, boss_every:5,
@@ -345,7 +347,7 @@ const D = {
   boss_height:4.2, boss_max_w:8.2, boss_dodge_chance:0.55, boss_dodge_cd:3.5, boss_dodge_dist:1.7, boss_dodge_time:0.32, cam_anchor_boss:.6, hp_stage1:400, hp_growth:1.25, gold_stage1:80, gold_growth:1.23,
   light_weight:0.06, heavy_weight:0.16, first_clear_ratio:0.5,
   // v1.0 per-piece HP (replaces splitting the 18_StageBalance budget): hp = hp_unit × 1.25^(stage-1) × weight
-  hp_unit:10.5, hp_piece_growth:1.38, hp_light:2.1, hp_heavy:6.5, hp_final:32, gold_mult:1.15,
+  hp_unit:10.5, hp_piece_growth:1.38, hp_light:1.05, hp_heavy:3.6, hp_final:32, gold_mult:1.15,
   base_cost:{power:25, speed:15, money:30}, cost_growth:1.14,
   offline_cap_hours:8, offline_efficiency:0.5, sample_window:3, save_interval:30, move_speed:4.6,
   // ---- v0.3 layout (proposal, needs GDD sign-off) ----
@@ -448,7 +450,7 @@ const R = { mode:'boot', stage:1, attempt:0, t:0, deadline:0, groups:[], gi:0, p
   modeT:0, timeScale:1, aborted:false, nextId:1, lastWarnSec:-1, ghosts:[], ground:0 };
 /* ---------- v2.9 weapons: the robot no longer has a built-in skill — its gun decides how it fights ---------- */
 const WEAPONS = {
-  red:  { name:'Junk Blaster', tier:'C', type:'Blast',  img:'gun_red', front:'hero_front_red', dmg:6, cd:2.1,          // fires a compressed junk ball that explodes on contact
+  red:  { name:'Junk Blaster', tier:'C', type:'Blast',  img:'gun_red', front:'hero_front_red', dmg:6, cd:1.9,          // fires a compressed junk ball that explodes on contact
           rig:{ NOZ_PIVOT:[79,161], NOZ_SIZE:[301,254], MOUTH:[186,-75], CHAMBER:[28,-60] } },
   blue: { name:'Vacuum Gun',   tier:'D', type:'Vacuum', img:'gun',     front:'hero_front',     dmg:1, tick:0.3,        // continuous suction beam, ramps up while it keeps sucking
           rig:{ NOZ_PIVOT:[112,181], NOZ_SIZE:[337,248], MOUTH:[174,-100], CHAMBER:[-5,-69] } },
@@ -639,7 +641,7 @@ function damage(t, amt){
 }
 function kill(t){
   t.dead = true;
-  if (t.kind !== 'boss'){ R.chains = R.chains || []; R.chains.push({ t: R.t + D.chain_delay, x:t.x, y:t.y, dmg: t.maxHp*D.chain_ratio, gi:t.group, src:t.id, kind:t.kind }); }
+  if (t.kind !== 'boss' && !t.byChain){ R.chains = R.chains || []; R.chains.push({ t: R.t + D.chain_delay, x:t.x, y:t.y, dmg: t.maxHp*D.chain_ratio, gi:t.group, src:t.id, kind:t.kind }); }
   FX.flora(t);
   const pay = fl(t.gold * F.money(S.lv.money));
   S.wallet += pay; R.gold += pay;
@@ -746,6 +748,12 @@ function robotStep(dt){
         if (t.id !== robot.suckId){ robot.suckId = t.id; robot.phase = needMove(t) ? ((manualOn() || robot.follower) ? 'idle' : 'move') : 'acquire'; robot.pt = D.acquire_base; break; }
         const dealt = damage(t, robot.snap.power*robot.snap.over*W_(robot).dmg*(1 + D.suck_ramp*robot.M));
         if (!alive()) return;
+        if (W_(robot).type === 'Vacuum'){   // wide beam: also drags in the nearest neighbours of the target
+          const base = robot.snap.power*robot.snap.over*W_(robot).dmg*(1 + D.suck_ramp*robot.M)*D.vac_side_ratio;
+          const side = groupAlive().filter(o => o !== t && !o.dead && o.landed !== false && Math.hypot(o.x - t.x, o.y - t.y) <= D.vac_side_radius + tW(o)*.3)
+            .sort((a,b) => Math.hypot(a.x-t.x, a.y-t.y) - Math.hypot(b.x-t.x, b.y-t.y)).slice(0, D.vac_side_max);
+          for (const o of side){ const v = damage(o, base); if (v > 0){ FX.dmgNum(o, v, 'tick'); o.tug = 1; } if (!alive()) return; }
+        }
         if (dealt > 0){
           FX.dmgNum(t, dealt, 'tick');
           robot.M++; FX.suckChips(t); SFX.suck(robot.M); RIG.a.pulse = 1; RIG.a.bulges.push({ t:-.3 }); FX.suckTick(t);
@@ -776,6 +784,12 @@ function release(){
   FX.muzzle(n); FX.release(n); SFX.fire();
 }
 function powerTier(){ const L = S.lv.power; return L>=D.power_tiers[2] ? 2 : L>=D.power_tiers[1] ? 1 : 0; }
+function blastTargets(x, y, skipId){   // nearest landed pieces inside the blast, with normalised distance 0..1
+  const R0 = D.blast_radius;
+  return groupAlive().filter(o => o.id !== skipId && !o.dead && o.landed !== false)
+    .map(o => [o, Math.max(0, Math.hypot(o.x - x, o.y - y) - tW(o)*.3)/R0]).filter(([,d]) => d <= 1)
+    .sort((a,b) => a[1] - b[1]).slice(0, D.blast_max);
+}
 function projStep(){
   if (!R.proj.length) return;
   const token = R.attempt, gi = R.gi, alive = () => R.attempt===token && R.gi===gi;
@@ -787,7 +801,7 @@ function projStep(){
     if (p.phase==='fly' && R.t >= p.t1 && p.dodged){   // whiff: the boss is gone, the ball hits the ground and rolls on
       const t = byId(p.tid), q = map.at(t ? t.s : 0);
       p.dir = { x:q.tx, y:q.ty }; FX.whiff(p); p.combo = 0;
-      for (const o of groupAlive()){ if (o.id === p.tid || o.dead) continue; if (Math.hypot(o.x - p.fx, o.y - p.fy) <= D.blast_radius + tW(o)*.3){ const v = p.dmg*D.blast_ratio; FX.dmgNum(o, v, 'roll'); damage(o, v); p.combo++; if (!alive()) return; } }
+      for (const [o, d] of blastTargets(p.fx, p.fy, p.tid)){ if (o.dead) continue; const v = p.dmg*D.blast_ratio*(1 - D.blast_falloff*d); FX.dmgNum(o, v, 'roll'); damage(o, v); p.combo++; if (!alive()) return; }
       FX.burst(p.fx, p.fy, p); p.dead = true; continue;
     }
     if (p.phase==='fly' && R.t >= p.t1){
@@ -795,10 +809,10 @@ function projStep(){
       if (!t){ p.ghost = true; p.phase = 'roll'; p.rx = p.lx ?? p.x0; p.ry = p.ly ?? p.y0; p.rs = R.t; p.dir = map.at(0); continue; }
       const q = map.at(t.s ?? 0); p.dir = { x:q.tx, y:q.ty };
       FX.land(t, p); FX.dmgNum(t, p.dmg, 'shot');
-      const bx = t.x, by = t.y, splash = groupAlive().filter(o => o !== t && Math.hypot(o.x - bx, o.y - by) <= D.blast_radius + tW(o)*.3);
+      const bx = t.x, by = t.y, splash = blastTargets(bx, by, t.id);
       damage(t, p.dmg); if (!alive()) return;
       p.combo = 1;
-      for (const o of splash){ if (o.dead) continue; const v = p.dmg*D.blast_ratio; FX.dmgNum(o, v, 'roll'); damage(o, v); p.combo++; if (!alive()) return; }
+      for (const [o, d] of splash){ if (o.dead) continue; const v = p.dmg*D.blast_ratio*(1 - D.blast_falloff*d); FX.dmgNum(o, v, 'roll'); damage(o, v); p.combo++; if (!alive()) return; }
       FX.burst(bx, by, p); p.dead = true;
       continue;
     }
@@ -830,8 +844,9 @@ function chainStep(){   // cascading pops (simulation side: they deal real damag
   for (const c of due){
     if (c.gi !== R.gi) continue;
     FX.pop(c);
-    for (const o of groupAlive()){ if (o.dead || o.id === c.src) continue;
-      if (Math.hypot(o.x - c.x, o.y - c.y) <= D.chain_radius + tW(o)*.3){ FX.dmgNum(o, c.dmg, 'splash'); damage(o, c.dmg); if (R.attempt !== token || R.gi !== gi) return; } }
+    const near = groupAlive().filter(o => !o.dead && o.id !== c.src && o.landed !== false && Math.hypot(o.x - c.x, o.y - c.y) <= D.chain_radius + tW(o)*.3)
+      .sort((a,b) => Math.hypot(a.x-c.x, a.y-c.y) - Math.hypot(b.x-c.x, b.y-c.y)).slice(0, D.chain_max);
+    for (const o of near){ o.byChain = true; FX.dmgNum(o, c.dmg, 'splash'); damage(o, c.dmg); if (!o.dead) o.byChain = false; if (R.attempt !== token || R.gi !== gi) return; }
   }
 }
 function bossStep(){   // boss sidestep motion (simulation-side so hits use the real position)
